@@ -1,0 +1,913 @@
+# AZ Data Agent - DeepAgent 架构设计
+
+**创建日期**: 2026-03-16
+**版本**: 2.0
+**技术栈**: LangChain 1.0, DeepAgent, Snowflake, Streamlit
+
+---
+
+## 1. 概述
+
+### 1.1 背景
+
+基于 LangChain 1.0 DeepAgent 架构重新设计 Agent 模块，充分利用 DeepAgent 的内置功能（自动压缩、文件系统、Skills 支持），提升数据分析能力。
+
+### 1.2 核心变更
+
+| 变更项 | 旧方案 | 新方案 |
+|--------|--------|--------|
+| Agent 框架 | LangChain 0.3 `create_tool_calling_agent` | LangChain 1.0 DeepAgent `create_deep_agent` |
+| Skills | 自定义实现 | DeepAgent 原生 Skills 文件系统 |
+| Middleware | 自定义实现 | DeepAgent Middleware 接口 |
+| 依赖包 | langchain>=0.3.0 | langchain>=1.0.0, deepagents>=0.1.0 |
+
+### 1.3 关键决策
+
+| 决策点 | 选择 | 理由 |
+|--------|------|------|
+| Skills | SQL 分析 + 可视化 + 报告 | 完整数据分析能力 |
+| Middleware | 数据上下文 + 告警触发 | 注入上下文 + 监控集成 |
+| SubAgent | 不使用 | 任务连贯，不需要隔离 |
+| 告警集成 | 监控主动推送 | 简单直接，易于控制 |
+| 上下文来源 | 硬编码配置 | 快速开发，内容稳定 |
+
+---
+
+## 2. 整体架构
+
+### 2.1 架构图
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         AZ Data Agent (DeepAgent)                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                        Middleware Layer                             │ │
+│  │  ┌──────────────────────┐  ┌───────────────────────────────────┐   │ │
+│  │  │ DataContextMiddleware│  │ AlertTriggerMiddleware            │   │ │
+│  │  │ • 表结构注入          │  │ • 接收监控告警                     │   │ │
+│  │  │ • 业务元数据          │  │ • 触发 Agent 分析                  │   │ │
+│  │  └──────────────────────┘  └───────────────────────────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                    ↓                                     │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                          Tools Layer                                │ │
+│  │  ┌──────────────────────┐  ┌───────────────────────────────────┐   │ │
+│  │  │ snowflake_query      │  │ create_chart                      │   │ │
+│  │  │ • 执行 SQL 查询       │  │ • 生成 Plotly 图表                │   │ │
+│  │  └──────────────────────┘  └───────────────────────────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                    ↓                                     │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                          Skills Layer                               │ │
+│  │  ┌────────────────┐  ┌────────────────┐  ┌─────────────────────┐   │ │
+│  │  │ sql_analyzer   │  │ data_visualizer│  │ report_generator    │   │ │
+│  │  │ • SQL 生成      │  │ • 图表选择      │  │ • 报告结构          │   │ │
+│  │  │ • 查询模板      │  │ • 可视化指南    │  │ • 分析模板          │   │ │
+│  │  └────────────────┘  └────────────────┘  └─────────────────────┘   │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                     │
+                                     ↓
+                    ┌────────────────────────────────┐
+                    │      External Integrations      │
+                    │  ┌─────────────┐ ┌───────────┐ │
+                    │  │ Snowflake   │ │ Monitor   │ │
+                    │  │ Data        │ │ Service   │ │
+                    │  └─────────────┘ └───────────┘ │
+                    └────────────────────────────────┘
+```
+
+### 2.2 模块结构
+
+```
+src/agent/
+├── __init__.py                    # 模块导出
+├── agent.py                       # DeepAgent 主入口
+│
+├── middleware/                    # 中间件
+│   ├── __init__.py
+│   ├── data_context.py           # 数据上下文中间件
+│   └── alert_trigger.py          # 告警触发中间件
+│
+├── skills/                        # 技能模块
+│   ├── __init__.py
+│   ├── sql_analyzer/             # SQL 分析技能
+│   │   └── skill.md
+│   ├── data_visualizer/          # 数据可视化技能
+│   │   └── skill.md
+│   └── report_generator/         # 报告生成技能
+│       └── skill.md
+│
+├── tools/                         # 工具
+│   ├── __init__.py
+│   ├── snowflake_tool.py         # Snowflake 查询工具
+│   └── chart_tool.py             # 图表生成工具
+│
+└── context/                       # 上下文配置
+    ├── __init__.py
+    └── business_context.py       # 硬编码的业务元数据
+```
+
+### 2.3 依赖更新
+
+```toml
+# pyproject.toml
+dependencies = [
+    "langchain>=1.0.0",
+    "deepagents>=0.1.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.3.0",
+    "snowflake-connector-python>=3.0.0",
+    "streamlit>=1.30.0",
+    "apscheduler>=3.10.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "pyyaml>=6.0",
+    "plotly>=5.0.0",
+    "pandas>=2.0.0",
+    "python-dotenv>=1.0.0",
+]
+```
+
+---
+
+## 3. Middleware 中间件
+
+### 3.1 数据上下文中间件
+
+**文件**: `src/agent/middleware/data_context.py`
+
+**职责**: 注入 Snowflake 表结构、字段说明、业务元数据到 Agent 上下文。
+
+```python
+from deepagents import Middleware
+
+class DataContextMiddleware(Middleware):
+    """注入数据仓库的业务上下文"""
+
+    def __init__(self):
+        self.context = self._load_context()
+
+    def _load_context(self) -> str:
+        """加载硬编码的业务上下文"""
+        from src.agent.context.business_context import BUSINESS_CONTEXT
+        return BUSINESS_CONTEXT
+
+    def process(self, request):
+        """在请求中注入上下文"""
+        enriched_prompt = f"""
+{request.system_prompt}
+
+## 数据仓库上下文
+
+{self.context}
+"""
+        return request.with_system_prompt(enriched_prompt)
+```
+
+### 3.2 业务上下文配置
+
+**文件**: `src/agent/context/business_context.py`
+
+```python
+BUSINESS_CONTEXT = """
+## Snowflake 数据仓库
+
+### 数据库路径
+ENT_HACKATHON_DATA_SHARE.EA_HACKATHON
+
+### 事实表
+
+#### FACT_PNL_BASE_BRAND (P&L 财务数据)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| BUD_VALUE | NUMBER | 预算值 |
+| BUD_VARIANCE | NUMBER | 预算偏差 |
+| PY_VALUE | NUMBER | 去年同期值 |
+| PY_VARIANCE | NUMBER | 同比偏差 |
+
+#### FACT_COM_BASE_BRAND (商业/市场数据)
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| VALUE | NUMBER | 市场值 |
+| MARKET_SHARE | NUMBER | 市场份额 |
+
+### 维度表
+
+- DIM_ACCOUNT: P&L 科目维度
+- DIM_PRODUCT: 产品/品牌维度（含 AZ_PROD_IND 标识阿斯利康产品）
+- DIM_MARKET: 治疗市场维度
+- DIM_TIME: 时间维度（含 IS_CURRENT_QUARTER, IS_CURRENT_YEAR 标识）
+- DIM_SCENARIO: 计划场景
+
+### 地理范围
+- Spain (44000ES)
+- Brazil (44000BR)
+
+### 治疗领域
+- Oncology TA
+- BioPharma TA (CVRM)
+- Rare Disease TA
+- Central TA
+"""
+```
+
+### 3.3 告警触发中间件
+
+**文件**: `src/agent/middleware/alert_trigger.py`
+
+**职责**: 接收监控模块的告警推送，调用 Agent 进行自动分析。
+
+```python
+from typing import Callable, Optional
+from datetime import datetime
+
+from src.monitor.models import AlertQueue, Metric, MetricResult
+
+
+class AlertTriggerMiddleware:
+    """处理监控告警的触发和回调"""
+
+    def __init__(self):
+        self._agent_invoke: Optional[Callable] = None
+
+    def set_agent_invoke(self, invoke_func: Callable):
+        """设置 Agent 的 invoke 方法"""
+        self._agent_invoke = invoke_func
+
+    def on_alert(
+        self,
+        alert: AlertQueue,
+        metric: Metric,
+        result: MetricResult,
+    ) -> str:
+        """
+        处理告警事件
+
+        Args:
+            alert: 告警队列记录
+            metric: 触发的指标
+            result: 执行结果
+
+        Returns:
+            分析结果
+        """
+        if not self._agent_invoke:
+            return "Agent not initialized"
+
+        prompt = self._build_analysis_prompt(metric, result)
+
+        try:
+            response = self._agent_invoke({
+                "messages": [{"role": "user", "content": prompt}]
+            })
+            return response.get("output", "Analysis completed")
+        except Exception as e:
+            return f"Analysis failed: {str(e)}"
+
+    def _build_analysis_prompt(
+        self,
+        metric: Metric,
+        result: MetricResult,
+    ) -> str:
+        """构建分析提示词"""
+        return f"""
+## 监控告警分析请求
+
+### 告警信息
+- **指标名称**: {metric.name}
+- **指标描述**: {metric.description}
+- **指标类别**: {metric.category}
+
+### 触发数据
+- **当前值**: {result.actual_value}
+- **阈值条件**: {metric.threshold_operator} {metric.threshold_value}
+- **触发时间**: {result.executed_at}
+
+### 分析要求
+
+请执行以下分析：
+
+1. **异常确认**: 查询相关数据确认异常情况
+2. **原因分析**: 分析导致异常的可能原因
+3. **影响评估**: 评估对业务的影响范围
+4. **建议措施**: 提供具体的业务建议
+
+请生成一份完整的分析报告。
+"""
+
+
+# 全局单例
+_alert_middleware: Optional[AlertTriggerMiddleware] = None
+
+
+def get_alert_middleware() -> AlertTriggerMiddleware:
+    """获取告警中间件单例"""
+    global _alert_middleware
+    if _alert_middleware is None:
+        _alert_middleware = AlertTriggerMiddleware()
+    return _alert_middleware
+```
+
+---
+
+## 4. Skills 技能模块
+
+### 4.1 Skills 架构
+
+```
+src/agent/skills/
+├── __init__.py
+├── sql_analyzer/              # SQL 分析技能
+│   └── skill.md
+├── data_visualizer/          # 数据可视化技能
+│   └── skill.md
+└── report_generator/         # 报告生成技能
+    └── skill.md
+```
+
+### 4.2 SQL 分析技能
+
+**文件**: `src/agent/skills/sql_analyzer/skill.md`
+
+```markdown
+# SQL Analyzer Skill
+
+## 描述
+分析用户的数据需求，生成正确的 Snowflake SQL 查询。
+
+## 能力
+- 理解自然语言的数据查询需求
+- 生成符合 Snowflake 语法的 SQL
+- 正确使用 JOIN 连接事实表和维度表
+- 处理 NULL 值和除零保护
+
+## 使用场景
+- 用户询问收入、成本等财务指标
+- 用户需要按产品、市场、时间等维度分析
+- 用户需要同比、环比、预算偏差分析
+
+## 查询模板
+
+### 当前季度收入
+```sql
+SELECT SUM(f.BUD_VALUE) as revenue
+FROM ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.FACT_PNL_BASE_BRAND f
+JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_TIME t
+  ON f.TIME_KEY = t.TIME_KEY
+WHERE t.IS_CURRENT_QUARTER = TRUE
+```
+
+### 按产品类别的预算偏差
+```sql
+SELECT
+  p.PRODUCT_NAME,
+  SUM(f.BUD_VARIANCE) / NULLIF(SUM(f.BUD_VALUE), 0) * 100 as variance_pct
+FROM ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.FACT_PNL_BASE_BRAND f
+JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_PRODUCT p
+  ON f.PRODUCT_KEY = p.PRODUCT_KEY
+GROUP BY p.PRODUCT_NAME
+ORDER BY variance_pct DESC
+```
+
+### AZ 市场份额
+```sql
+SELECT
+  SUM(CASE WHEN p.AZ_PROD_IND = TRUE THEN f.VALUE ELSE 0 END) /
+  NULLIF(SUM(f.VALUE), 0) * 100 as az_share
+FROM ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.FACT_COM_BASE_BRAND f
+JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_PRODUCT p
+  ON f.PRODUCT_KEY = p.PRODUCT_KEY
+```
+
+## 注意事项
+1. 始终使用完整表路径
+2. 使用 NULLIF 防止除零错误
+3. 限制结果行数（建议 TOP 100）
+```
+
+### 4.3 数据可视化技能
+
+**文件**: `src/agent/skills/data_visualizer/skill.md`
+
+```markdown
+# Data Visualizer Skill
+
+## 描述
+将查询结果转换为可视化图表，支持多种图表类型。
+
+## 能力
+- 根据数据特征自动推荐图表类型
+- 生成 Plotly 兼容的图表配置
+- 支持柱状图、折线图、饼图、散点图
+
+## 图表选择指南
+
+| 数据类型 | 推荐图表 |
+|---------|---------|
+| 分类对比 | bar (柱状图) |
+| 时间趋势 | line (折线图) |
+| 占比分析 | pie (饼图) |
+| 相关性分析 | scatter (散点图) |
+
+## 使用示例
+
+### 柱状图
+```json
+{
+  "type": "bar",
+  "x": ["Product A", "Product B", "Product C"],
+  "y": [100, 150, 80],
+  "title": "Revenue by Product"
+}
+```
+
+### 折线图
+```json
+{
+  "type": "line",
+  "x": ["Q1", "Q2", "Q3", "Q4"],
+  "y": [100, 120, 115, 140],
+  "title": "Quarterly Revenue Trend"
+}
+```
+
+## 工具调用
+使用 `create_chart` 工具生成图表。
+```
+
+### 4.4 报告生成技能
+
+**文件**: `src/agent/skills/report_generator/skill.md`
+
+```markdown
+# Report Generator Skill
+
+## 描述
+生成结构化的数据分析报告。
+
+## 能力
+- 整合多维度分析结果
+- 生成 Markdown 格式报告
+- 包含数据表格和图表引用
+
+## 报告模板
+
+### 数据分析报告结构
+```markdown
+# [报告标题]
+
+## 概述
+[简要描述分析目的和主要发现]
+
+## 数据摘要
+| 指标 | 数值 |
+|------|------|
+| ... | ... |
+
+## 详细分析
+[分析内容和图表]
+
+## 结论与建议
+[基于数据的业务建议]
+
+## 数据来源
+- 查询时间: [timestamp]
+- 数据范围: [scope]
+```
+
+## 使用场景
+- 监控告警的自动分析报告
+- 用户请求的综合分析报告
+- 定期业务分析报告
+```
+
+### 4.5 Skills 注册
+
+**文件**: `src/agent/skills/__init__.py`
+
+```python
+from pathlib import Path
+
+SKILLS_DIR = Path(__file__).parent
+
+SKILLS_REGISTRY = {
+    "sql_analyzer": str(SKILLS_DIR / "sql_analyzer"),
+    "data_visualizer": str(SKILLS_DIR / "data_visualizer"),
+    "report_generator": str(SKILLS_DIR / "report_generator"),
+}
+
+
+def get_skill_paths() -> list[str]:
+    """获取所有技能路径"""
+    return list(SKILLS_REGISTRY.values())
+```
+
+---
+
+## 5. Tools 工具层
+
+### 5.1 Snowflake 查询工具
+
+**文件**: `src/agent/tools/snowflake_tool.py`
+
+```python
+from typing import Type
+from pydantic import BaseModel, Field
+
+from src.core.database import execute_query_with_columns
+from src.core.config import get_settings
+
+
+class SnowflakeToolInput(BaseModel):
+    """Snowflake 工具输入"""
+    sql: str = Field(
+        description="要执行的 Snowflake SQL 查询语句"
+    )
+
+
+def snowflake_query(sql: str) -> str:
+    """
+    执行 Snowflake SQL 查询
+
+    Args:
+        sql: SQL 查询语句
+
+    Returns:
+        查询结果的格式化字符串
+    """
+    settings = get_settings()
+
+    try:
+        columns, rows = execute_query_with_columns(sql, settings)
+
+        if not rows:
+            return "查询没有返回结果。"
+
+        # 格式化输出
+        result = f"列名: {', '.join(columns)}\n\n"
+        result += f"共 {len(rows)} 行数据:\n\n"
+
+        # 显示前 20 行
+        for i, row in enumerate(rows[:20]):
+            row_str = " | ".join(str(v) if v is not None else "NULL" for v in row)
+            result += f"{i+1}. {row_str}\n"
+
+        if len(rows) > 20:
+            result += f"\n... 还有 {len(rows) - 20} 行数据"
+
+        return result
+
+    except Exception as e:
+        return f"查询执行失败: {str(e)}"
+```
+
+### 5.2 图表生成工具
+
+**文件**: `src/agent/tools/chart_tool.py`
+
+```python
+import json
+from typing import Literal
+from pydantic import BaseModel, Field
+
+
+class ChartToolInput(BaseModel):
+    """图表工具输入"""
+    chart_type: Literal["bar", "line", "pie", "scatter"] = Field(
+        description="图表类型: bar(柱状图), line(折线图), pie(饼图), scatter(散点图)"
+    )
+    x: list = Field(
+        description="X 轴数据（分类标签或数值）"
+    )
+    y: list = Field(
+        description="Y 轴数据（数值）"
+    )
+    title: str = Field(
+        default="数据可视化",
+        description="图表标题"
+    )
+    x_label: str = Field(
+        default="",
+        description="X 轴标签"
+    )
+    y_label: str = Field(
+        default="",
+        description="Y 轴标签"
+    )
+
+
+def create_chart(
+    chart_type: str,
+    x: list,
+    y: list,
+    title: str = "数据可视化",
+    x_label: str = "",
+    y_label: str = "",
+) -> str:
+    """
+    创建数据可视化图表
+
+    Args:
+        chart_type: 图表类型
+        x: X 轴数据
+        y: Y 轴数据
+        title: 图表标题
+        x_label: X 轴标签
+        y_label: Y 轴标签
+
+    Returns:
+        Plotly 图表配置的 JSON 字符串
+    """
+    try:
+        config = {
+            "data": [{
+                "type": chart_type,
+                "x": x,
+                "y": y,
+            }],
+            "layout": {
+                "title": {"text": title},
+                "xaxis": {"title": {"text": x_label}} if x_label else {},
+                "yaxis": {"title": {"text": y_label}} if y_label else {},
+            }
+        }
+
+        return json.dumps(config, ensure_ascii=False, indent=2)
+
+    except Exception as e:
+        return f"图表创建失败: {str(e)}"
+```
+
+### 5.3 工具注册
+
+**文件**: `src/agent/tools/__init__.py`
+
+```python
+from typing import Callable
+
+from src.agent.tools.snowflake_tool import snowflake_query
+from src.agent.tools.chart_tool import create_chart
+
+
+__all__ = [
+    "snowflake_query",
+    "create_chart",
+    "get_default_tools",
+]
+
+
+def get_default_tools() -> list[Callable]:
+    """获取默认工具列表"""
+    return [
+        snowflake_query,
+        create_chart,
+    ]
+```
+
+---
+
+## 6. Agent 主入口
+
+### 6.1 主入口实现
+
+**文件**: `src/agent/agent.py`
+
+```python
+from typing import Optional
+
+from deepagents import create_deep_agent
+
+from src.core.config import Settings, get_settings
+from src.agent.tools import get_default_tools
+from src.agent.middleware.data_context import DataContextMiddleware
+from src.agent.middleware.alert_trigger import AlertTriggerMiddleware, get_alert_middleware
+from src.agent.skills import get_skill_paths
+
+
+SYSTEM_PROMPT = """You are an AI data analyst for AstraZeneca pharmaceutical data.
+
+Your role is to help users analyze business data, answer questions about financial metrics,
+market performance, and generate insights from the data warehouse.
+
+## Core Capabilities
+
+1. **SQL Analysis**: Generate and execute Snowflake queries
+2. **Data Visualization**: Create charts and graphs from query results
+3. **Report Generation**: Produce structured analysis reports
+
+## Workflow
+
+1. Understand the user's question completely
+2. Generate appropriate SQL queries using the snowflake_query tool
+3. Analyze the results and explain findings
+4. Offer to create visualizations when helpful
+5. Generate reports for complex analysis
+
+## Guidelines
+
+- Always use full table paths: ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.<TABLE>
+- Use NULLIF to prevent division by zero
+- Limit query results to reasonable sizes
+- Explain your analysis in business terms
+"""
+
+
+def create_az_data_agent(
+    settings: Optional[Settings] = None,
+    verbose: bool = False,
+) -> "DeepAgent":
+    """
+    创建 AZ 数据分析 Agent
+
+    Args:
+        settings: 应用配置
+        verbose: 是否打印详细日志
+
+    Returns:
+        配置好的 DeepAgent 实例
+    """
+    settings = settings or get_settings()
+
+    # 初始化工具
+    tools = get_default_tools()
+
+    # 初始化中间件
+    middleware = [
+        DataContextMiddleware(),
+    ]
+
+    # 获取技能路径
+    skills = get_skill_paths()
+
+    # 创建 Agent
+    agent = create_deep_agent(
+        model=settings.llm_model,
+        tools=tools,
+        middleware=middleware,
+        skills=skills,
+        system_prompt=SYSTEM_PROMPT,
+    )
+
+    return agent
+
+
+def analyze_with_agent(
+    question: str,
+    settings: Optional[Settings] = None,
+) -> str:
+    """
+    使用 Agent 分析问题
+
+    Args:
+        question: 用户问题
+        settings: 应用配置
+
+    Returns:
+        Agent 分析结果
+    """
+    agent = create_az_data_agent(settings)
+    result = agent.invoke({
+        "messages": [{"role": "user", "content": question}]
+    })
+    return result.get("output", "Unable to generate response")
+```
+
+### 6.2 模块导出
+
+**文件**: `src/agent/__init__.py`
+
+```python
+from src.agent.agent import create_az_data_agent, analyze_with_agent
+from src.agent.middleware.data_context import DataContextMiddleware
+from src.agent.middleware.alert_trigger import AlertTriggerMiddleware, get_alert_middleware
+from src.agent.tools import snowflake_query, create_chart, get_default_tools
+from src.agent.skills import SKILLS_REGISTRY, get_skill_paths
+
+__all__ = [
+    "create_az_data_agent",
+    "analyze_with_agent",
+    "DataContextMiddleware",
+    "AlertTriggerMiddleware",
+    "get_alert_middleware",
+    "snowflake_query",
+    "create_chart",
+    "get_default_tools",
+    "SKILLS_REGISTRY",
+    "get_skill_paths",
+]
+```
+
+---
+
+## 7. 集成点
+
+### 7.1 监控模块集成
+
+**文件**: `src/monitor/alert_engine.py` (修改部分)
+
+```python
+from typing import Optional
+from datetime import datetime
+
+from src.monitor.models import AlertQueue, AlertStatus, Metric, MetricResult
+from src.agent.middleware.alert_trigger import get_alert_middleware
+
+
+def process_metric(
+    metric: Metric,
+    settings: Settings,
+    db_path: str = "data/monitor.db",
+) -> MetricResult:
+    """执行指标并处理告警"""
+
+    # ... 现有的执行和阈值判断逻辑 ...
+
+    if is_alert:
+        # 创建告警记录
+        alert = AlertQueue(
+            metric_id=metric.id,
+            result_id=result.id,
+            status=AlertStatus.PROCESSING,
+        )
+        session.add(alert)
+        session.commit()
+
+        # 调用 Agent 进行分析
+        alert_middleware = get_alert_middleware()
+        analysis_result = alert_middleware.on_alert(alert, metric, result)
+
+        # 更新告警状态
+        alert.status = AlertStatus.COMPLETED
+        alert.analysis_result = analysis_result
+        alert.processed_at = datetime.utcnow()
+        session.commit()
+
+    return result
+```
+
+### 7.2 Web UI 集成
+
+**文件**: `src/web/app.py` (修改部分)
+
+```python
+import streamlit as st
+
+from src.agent.agent import create_az_data_agent
+from src.agent.middleware.alert_trigger import get_alert_middleware
+
+
+def main():
+    st.title("AZ Data Agent")
+
+    # 初始化 Agent
+    if "agent" not in st.session_state:
+        agent = create_az_data_agent()
+        st.session_state.agent = agent
+
+        # 注册告警回调
+        alert_middleware = get_alert_middleware()
+        alert_middleware.set_agent_invoke(agent.invoke)
+
+    # ... 其他 UI 逻辑 ...
+```
+
+---
+
+## 8. 文件清单
+
+| 文件 | 类型 | 说明 |
+|------|------|------|
+| `src/agent/agent.py` | 主入口 | DeepAgent 创建和调用 |
+| `src/agent/__init__.py` | 模块导出 | 公开 API |
+| `src/agent/middleware/data_context.py` | 中间件 | 数据上下文注入 |
+| `src/agent/middleware/alert_trigger.py` | 中间件 | 告警触发处理 |
+| `src/agent/context/business_context.py` | 配置 | 业务元数据 |
+| `src/agent/tools/snowflake_tool.py` | 工具 | SQL 查询执行 |
+| `src/agent/tools/chart_tool.py` | 工具 | 图表生成 |
+| `src/agent/tools/__init__.py` | 模块导出 | 工具注册 |
+| `src/agent/skills/__init__.py` | 模块导出 | Skills 注册 |
+| `src/agent/skills/sql_analyzer/skill.md` | 技能 | SQL 分析指南 |
+| `src/agent/skills/data_visualizer/skill.md` | 技能 | 可视化指南 |
+| `src/agent/skills/report_generator/skill.md` | 技能 | 报告生成指南 |
+
+---
+
+## 附录
+
+### A. 迁移注意事项
+
+1. **依赖安装**: 需要 `pip install deepagents langchain>=1.0.0`
+2. **API 变更**: `create_tool_calling_agent` → `create_deep_agent`
+3. **返回格式**: DeepAgent 的 invoke 返回格式可能与之前不同，需要适配
+4. **测试覆盖**: 需要为新的 Middleware 和 Skills 编写测试
+
+### B. 参考文档
+
+- [LangChain DeepAgent 文档](https://docs.langchain.com/oss/python/deepagents/overview)
+- [DeepAgent Middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in)
+- [DeepAgent Skills](https://docs.langchain.com/oss/python/deepagents/skills)
