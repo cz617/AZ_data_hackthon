@@ -1,0 +1,11 @@
+ACCOUNT_KEY,ACCOUNT_CODE,ACCOUNT_DESCRIPTION
+1001,NET_REVENUE,Net Product Sales
+1002,GROSS_REVENUE,Gross Product Sales
+1101,DISCOUNT,Gross-to-Net Deductions
+2001,COGS,Cost of Goods Sold
+2101,RD_EXPENSE,Research & Development Expense
+2201,SM_EXPENSE,Sales & Marketing Expense
+2301,GNA_EXPENSE,General & Admin Expense
+3001,CORE_OP_PROFIT,Core Operating Profit
+3101,EBITDA,EBITDA
+9001,OTHER_INCOME,Other Operating Income

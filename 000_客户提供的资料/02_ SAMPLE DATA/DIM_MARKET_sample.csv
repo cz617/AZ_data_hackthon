@@ -1,0 +1,11 @@
+MARKET_KEY,MARKET_NAME,SUB_MARKET_NAME
+10,EGFR TKI,Lung Cancer
+15,ICS/LAMA/LABA,Respiratory
+20,EGFR TKI,Brazil Lung Cancer
+25,ADC Breast Cancer,Advanced Breast Cancer
+30,SGLT2 Inhibitors,CVRM Diabetes
+35,ORAL ANTI-PLATELET,Cardiovascular
+40,PARP INHIBITORS,Ovarian Cancer
+45,PDE4 INHIBITORS,Respiratory
+50,BETA BLOCKERS,Cardiovascular
+55,HIGH BLOOD PRESSURE,Hypertension
