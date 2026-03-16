@@ -1,0 +1,20 @@
+llm:
+  provider: "${LLM_PROVIDER:claude}"
+  model: "${LLM_MODEL:claude-sonnet-4-5-20250929}"
+
+database:
+  type: "snowflake"
+  account: "${SNOWFLAKE_ACCOUNT}"
+  user: "${SNOWFLAKE_USER}"
+  warehouse: "${SNOWFLAKE_WAREHOUSE:COMPUTE_WH}"
+  database: "${SNOWFLAKE_DATABASE:ENT_HACKATHON_DATA_SHARE}"
+  schema: "${SNOWFLAKE_SCHEMA:EA_HACKATHON}"
+
+monitor:
+  interval_minutes: 5
+  metrics_config: "config/metrics_template.yaml"
+  enabled: true
+
+app:
+  name: "AZ Data Agent"
+  debug: false

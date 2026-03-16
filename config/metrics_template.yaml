@@ -1,0 +1,45 @@
+metrics:
+  - name: "Revenue Budget Variance"
+    description: "Percentage variance between actual and budget revenue"
+    category: "variance"
+    sql_template: |
+      SELECT
+        SUM(f.BUD_VARIANCE) / NULLIF(SUM(f.BUD_VALUE), 0) * 100 as variance_pct
+      FROM ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.FACT_PNL_BASE_BRAND f
+      JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_TIME t
+        ON f.TIME_KEY = t.TIME_KEY
+      WHERE t.IS_CURRENT_QUARTER = TRUE
+    threshold_type: "percentage"
+    threshold_value: 10.0
+    threshold_operator: "gt"
+
+  - name: "AZ Market Share"
+    description: "AstraZeneca market share percentage"
+    category: "market_share"
+    sql_template: |
+      SELECT
+        SUM(CASE WHEN p.AZ_PROD_IND = TRUE THEN f.VALUE ELSE 0 END) /
+        NULLIF(SUM(f.VALUE), 0) * 100 as az_share
+      FROM ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.FACT_COM_BASE_BRAND f
+      JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_PRODUCT p
+        ON f.PRODUCT_KEY = p.PRODUCT_KEY
+      JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_TIME t
+        ON f.TIME_KEY = t.TIME_KEY
+      WHERE t.IS_CURRENT_YEAR = TRUE
+    threshold_type: "percentage"
+    threshold_value: 20.0
+    threshold_operator: "lt"
+
+  - name: "YoY Revenue Change"
+    description: "Year-over-year revenue change percentage"
+    category: "variance"
+    sql_template: |
+      SELECT
+        SUM(f.PY_VARIANCE) / NULLIF(SUM(f.PY_VALUE), 0) * 100 as yoy_change
+      FROM ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.FACT_PNL_BASE_BRAND f
+      JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_TIME t
+        ON f.TIME_KEY = t.TIME_KEY
+      WHERE t.IS_CURRENT_YEAR = TRUE
+    threshold_type: "percentage"
+    threshold_value: -15.0
+    threshold_operator: "lt"
