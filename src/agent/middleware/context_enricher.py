@@ -1,8 +1,9 @@
 """Data context middleware for injecting business context into agent."""
 from typing import Callable
 
-from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_core.messages import SystemMessage
+from langchain.agents.middleware import AgentMiddleware, ModelRequest
+from langchain.agents.middleware.types import ModelResponse
+from langchain.messages import SystemMessage
 
 from src.agent.context.business_context import BUSINESS_CONTEXT
 
