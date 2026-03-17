@@ -29,7 +29,7 @@ python scripts/init_db.py
 ## Architecture
 
 See [Design Document](docs/superpowers/specs/2026-03-16-az-data-agent-design.md)
-
+ 
 ## License
 
 MIT
