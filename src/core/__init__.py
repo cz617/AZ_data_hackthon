@@ -1,7 +1,8 @@
 """Core module - shared services and utilities."""
 from src.core.config import Settings, get_settings, reset_settings
 from src.core.database import execute_query, execute_query_with_columns, get_snowflake_connection
-from src.core.llm_provider import UnsupportedProviderError, get_llm
+# Temporarily disable to avoid langchain dependency issues
+# from src.core.llm_provider import UnsupportedProviderError, get_llm
 
 __all__ = [
     "Settings",
@@ -10,6 +11,6 @@ __all__ = [
     "get_snowflake_connection",
     "execute_query",
     "execute_query_with_columns",
-    "get_llm",
-    "UnsupportedProviderError",
+    # "get_llm",
+    # "UnsupportedProviderError",
 ]

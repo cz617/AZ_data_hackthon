@@ -1,50 +1,34 @@
-"""Snowflake database connection and query execution."""
+"""Database connection and query execution (SQLite implementation)."""
 from typing import Any
 
-import snowflake.connector
-from snowflake.connector import SnowflakeConnection
+import sqlite3
 
-from src.core.config import Settings
+# SQLite database path
+DB_PATH = "data/detection.db"
 
 
-def get_snowflake_connection(settings: Settings) -> SnowflakeConnection:
+def get_connection():
     """
-    Create and return a Snowflake connection.
-
-    Args:
-        settings: Application settings containing connection parameters
+    Create and return a SQLite connection.
 
     Returns:
-        SnowflakeConnection: Active Snowflake connection
+        SQLite connection object
     """
-    connection_params = {
-        "account": settings.snowflake_account,
-        "user": settings.snowflake_user,
-        "password": settings.snowflake_password,
-        "warehouse": settings.snowflake_warehouse,
-        "database": settings.snowflake_database,
-        "schema": settings.snowflake_schema,
-    }
-
-    # Add role if specified
-    if settings.snowflake_role:
-        connection_params["role"] = settings.snowflake_role
-
-    return snowflake.connector.connect(**connection_params)
+    return sqlite3.connect(DB_PATH)
 
 
 def execute_query(
     sql: str,
-    settings: Settings,
-    params: dict[str, Any] | None = None,
+    settings=None,
+    params: tuple[Any, ...] | list[Any] | None = None,
 ) -> list[tuple]:
     """
     Execute a SQL query and return results.
 
     Args:
         sql: SQL query to execute
-        settings: Application settings for database connection
-        params: Optional query parameters
+        settings: Application settings (unused, for compatibility)
+        params: Optional query parameters (SQLite uses ?)
 
     Returns:
         List of result tuples
@@ -52,46 +36,55 @@ def execute_query(
     Raises:
         Exception: If query execution fails
     """
-    conn = get_snowflake_connection(settings)
+    conn = get_connection()
 
     try:
-        with conn.cursor() as cursor:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
-            return cursor.fetchall()
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
+        results = cursor.fetchall()
+        conn.commit()
+        return results
     finally:
         conn.close()
 
 
 def execute_query_with_columns(
     sql: str,
-    settings: Settings,
-    params: dict[str, Any] | None = None,
+    settings=None,
+    params: tuple[Any, ...] | list[Any] | None = None,
 ) -> tuple[list[str], list[tuple]]:
     """
     Execute a SQL query and return column names and results.
 
     Args:
         sql: SQL query to execute
-        settings: Application settings for database connection
-        params: Optional query parameters
+        settings: Application settings (unused, for compatibility)
+        params: Optional query parameters (SQLite uses ?)
 
     Returns:
         Tuple of (column_names, result_rows)
     """
-    conn = get_snowflake_connection(settings)
+    conn = get_connection()
 
     try:
-        with conn.cursor() as cursor:
-            if params:
-                cursor.execute(sql, params)
-            else:
-                cursor.execute(sql)
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(sql, params)
+        else:
+            cursor.execute(sql)
 
-            columns = [desc[0] for desc in cursor.description]
-            results = cursor.fetchall()
-            return columns, results
+        columns = [desc[0] for desc in cursor.description]
+        results = cursor.fetchall()
+        conn.commit()
+        return columns, results
     finally:
         conn.close()
+
+
+# Legacy functions for backward compatibility
+def get_snowflake_connection(settings=None):
+    """Deprecated: Use get_connection() instead."""
+    return get_connection()

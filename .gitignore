@@ -49,3 +49,4 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+/docs/偏差计算.xlsx
