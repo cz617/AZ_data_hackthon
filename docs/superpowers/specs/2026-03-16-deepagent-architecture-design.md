@@ -16,10 +16,12 @@
 
 | 变更项 | 旧方案 | 新方案 |
 |--------|--------|--------|
-| Agent 框架 | LangChain 0.3 `create_tool_calling_agent` | LangChain 1.0 DeepAgent `create_deep_agent` |
+| Agent 框架 | LangChain 0.3 `create_tool_calling_agent` | DeepAgent `create_deep_agent` |
 | Skills | 自定义实现 | DeepAgent 原生 Skills 文件系统 |
-| Middleware | 自定义实现 | DeepAgent Middleware 接口 |
-| 依赖包 | langchain>=0.3.0 | langchain>=1.0.0, deepagents>=0.1.0 |
+| Middleware | 自定义实现 | LangChain AgentMiddleware 接口 |
+| 依赖包 | langchain>=0.3.0 | langchain>=0.3.0, deepagents>=0.1.0 |
+
+**注意**: `deepagents` 是 LangChain 官方的 pre-1.0 包，与 LangChain 0.3+ 兼容。
 
 ### 1.3 关键决策
 
@@ -44,11 +46,10 @@
 │                                                                          │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
 │  │                        Middleware Layer                             │ │
-│  │  ┌──────────────────────┐  ┌───────────────────────────────────┐   │ │
-│  │  │ DataContextMiddleware│  │ AlertTriggerMiddleware            │   │ │
-│  │  │ • 表结构注入          │  │ • 接收监控告警                     │   │ │
-│  │  │ • 业务元数据          │  │ • 触发 Agent 分析                  │   │ │
-│  │  └──────────────────────┘  └───────────────────────────────────┘   │ │
+│  │  ┌──────────────────────────────────────────────────────────────┐  │ │
+│  │  │ DataContextMiddleware                                        │  │ │
+│  │  │ • 表结构注入 • 业务元数据注入                                 │  │ │
+│  │  └──────────────────────────────────────────────────────────────┘  │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 │                                    ↓                                     │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
@@ -76,6 +77,8 @@
                     │  ┌─────────────┐ ┌───────────┐ │
                     │  │ Snowflake   │ │ Monitor   │ │
                     │  │ Data        │ │ Service   │ │
+                    │  │             │ │ +AlertTr- │ │
+                    │  │             │ │ iggerHandl│ │
                     │  └─────────────┘ └───────────┘ │
                     └────────────────────────────────┘
 ```
@@ -832,8 +835,10 @@ def analyze_with_agent(
     result = agent.invoke({
         "messages": [{"role": "user", "content": question}]
     })
-    # DeepAgent 返回格式可能不同，需要根据实际情况适配
-    return result.get("output", "Unable to generate response")
+    # DeepAgent (CompiledStateGraph) 返回结果中提取 output
+    if isinstance(result, dict):
+        return result.get("output", "Unable to generate response")
+    return str(result)
 ```
 
 ### 6.2 模块导出
@@ -917,48 +922,71 @@ class AlertStatus(str, PyEnum):
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 7.3 监控模块集成
+### 7.3 辅助函数定义
 
-**文件**: `src/monitor/alert_engine.py` (修改部分)
+**文件**: `src/monitor/executor.py` (已有，补充说明)
 
 ```python
-from typing import Optional
-from datetime import datetime
-
-from src.monitor.models import AlertQueue, AlertStatus, Metric, MetricResult
-from src.agent.middleware.alert_trigger import get_alert_middleware
+from src.core.database import execute_query
+from src.core.config import Settings
+from src.monitor.models import Metric
 
 
-def process_metric(
-    metric: Metric,
-    settings: Settings,
-    db_path: str = "data/monitor.db",
-) -> MetricResult:
-    """执行指标并处理告警"""
+def execute_metric_sql(metric: Metric, settings: Settings) -> float | None:
+    """
+    执行指标的 SQL 模板并返回标量值
 
-    # ... 现有的执行和阈值判断逻辑 ...
+    Args:
+        metric: 监控指标定义
+        settings: 应用配置
 
-    if is_alert:
-        # 创建告警记录
-        alert = AlertQueue(
-            metric_id=metric.id,
-            result_id=result.id,
-            status=AlertStatus.PROCESSING,
-        )
-        session.add(alert)
-        session.commit()
+    Returns:
+        查询结果的标量值，如果查询失败返回 None
+    """
+    try:
+        results = execute_query(metric.sql_template, settings)
+        if results and results[0]:
+            return float(results[0][0])
+        return None
+    except Exception as e:
+        print(f"Error executing metric SQL: {e}")
+        return None
+```
 
-        # 调用 Agent 进行分析
-        alert_middleware = get_alert_middleware()
-        analysis_result = alert_middleware.on_alert(alert, metric, result)
+**文件**: `src/monitor/alert_engine.py` (已有，补充说明)
 
-        # 更新告警状态
-        alert.status = AlertStatus.COMPLETED
-        alert.analysis_result = analysis_result
-        alert.processed_at = datetime.utcnow()
-        session.commit()
+```python
+from src.monitor.models import ThresholdOperator
 
-    return result
+
+def check_threshold(
+    actual_value: float | None,
+    threshold_value: float,
+    operator: ThresholdOperator,
+) -> bool:
+    """
+    检查实际值是否触发告警
+
+    Args:
+        actual_value: 实际测量值
+        threshold_value: 阈值
+        operator: 比较运算符
+
+    Returns:
+        True 表示触发告警
+    """
+    if actual_value is None:
+        return False
+
+    comparisons = {
+        ThresholdOperator.GT: actual_value > threshold_value,
+        ThresholdOperator.LT: actual_value < threshold_value,
+        ThresholdOperator.EQ: actual_value == threshold_value,
+        ThresholdOperator.GTE: actual_value >= threshold_value,
+        ThresholdOperator.LTE: actual_value <= threshold_value,
+    }
+
+    return comparisons.get(operator, False)
 ```
 
 ### 7.4 监控告警处理实现
@@ -1072,9 +1100,9 @@ def main():
 
 ---
 
-## 9. 错误处理策略
+## 8. 错误处理策略
 
-### 9.1 外部依赖错误处理
+### 8.1 外部依赖错误处理
 
 | 依赖 | 错误类型 | 处理策略 |
 |------|---------|---------|
@@ -1085,7 +1113,7 @@ def main():
 | LLM API | API 密钥无效 | 启动时验证，无效则拒绝启动 |
 | Skills | 文件不存在 | 跳过缺失的 skill，记录警告日志 |
 
-### 9.2 工具层错误处理
+### 8.2 工具层错误处理
 
 ```python
 # snowflake_tool.py 中的错误处理示例
@@ -1100,7 +1128,7 @@ def snowflake_query(sql: str) -> str:
         return f"查询执行失败: {str(e)}"
 ```
 
-### 9.3 告警处理错误处理
+### 8.3 告警处理错误处理
 
 ```python
 # alert_trigger.py 中的错误处理
@@ -1115,7 +1143,7 @@ def on_alert(self, alert, metric, result) -> str:
 
 ---
 
-## 10. 文件清单
+## 9. 文件清单
 
 | 文件 | 类型 | 说明 |
 |------|------|------|
@@ -1134,7 +1162,7 @@ def on_alert(self, alert, metric, result) -> str:
 
 ---
 
-## 11. 附录
+## 10. 附录
 
 ### A. 依赖验证
 
@@ -1151,9 +1179,9 @@ pip install deepagents
 
 ### B. 迁移注意事项
 
-1. **依赖安装**: 需要 `pip install deepagents langchain>=1.0.0`
+1. **依赖安装**: 需要 `pip install deepagents langchain>=0.3.0`
 2. **API 变更**: `create_tool_calling_agent` → `create_deep_agent`
-3. **返回格式**: DeepAgent 的 invoke 返回格式可能与之前不同，需要适配
+3. **返回格式**: DeepAgent (CompiledStateGraph) 返回格式可能与之前不同，需要适配
 4. **测试覆盖**: 需要为新的 Middleware 和 Skills 编写测试
 
 ### C. 参考文档
