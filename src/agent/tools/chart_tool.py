@@ -1,53 +1,49 @@
 """Chart tool for data visualization."""
-from typing import Type
-from pydantic import BaseModel, Field
-from langchain.tools import BaseTool
 import json
+from typing import Literal
+
+from langchain.tools import tool
 
 
-class ChartToolInput(BaseModel):
-    """Input for Chart tool."""
-    data: str = Field(description="JSON string containing data for visualization")
-    chart_type: str = Field(description="Type of chart: 'bar', 'line', 'pie', 'scatter'")
-    title: str = Field(default="", description="Chart title")
-
-
-class ChartTool(BaseTool):
-    """Tool for creating data visualizations using Plotly."""
-
-    name: str = "create_chart"
-    description: str = """
+@tool
+def create_chart(
+    chart_type: Literal["bar", "line", "pie", "scatter"],
+    x: list,
+    y: list,
+    title: str = "Data Visualization",
+    x_label: str = "",
+    y_label: str = "",
+) -> str:
+    """
     Create data visualizations from query results.
     Supports bar charts, line charts, pie charts, and scatter plots.
 
-    Input should be a JSON string with the data and chart configuration.
+    Args:
+        chart_type: Type of chart to create. Options: 'bar', 'line', 'pie', 'scatter'
+        x: X-axis data (category labels or numeric values)
+        y: Y-axis data (numeric values)
+        title: Chart title
+        x_label: Label for X-axis
+        y_label: Label for Y-axis
+
+    Returns:
+        Plotly chart configuration as JSON string
     """
-    args_schema: Type[BaseModel] = ChartToolInput
-
-    def _run(self, data: str, chart_type: str, title: str = "") -> str:
-        """Generate Plotly chart configuration."""
-        try:
-            parsed_data = json.loads(data)
-
-            chart_config = {
-                "data": [{
-                    "type": chart_type,
-                    "x": parsed_data.get("x", []),
-                    "y": parsed_data.get("y", []),
-                    "labels": parsed_data.get("labels", []),
-                    "values": parsed_data.get("values", []),
-                }],
-                "layout": {
-                    "title": title or "Data Visualization",
-                    "xaxis": {"title": parsed_data.get("x_label", "")},
-                    "yaxis": {"title": parsed_data.get("y_label", "")},
-                }
+    try:
+        config = {
+            "data": [{
+                "type": chart_type,
+                "x": x,
+                "y": y,
+            }],
+            "layout": {
+                "title": {"text": title},
+                "xaxis": {"title": {"text": x_label}} if x_label else {},
+                "yaxis": {"title": {"text": y_label}} if y_label else {},
             }
+        }
 
-            return json.dumps(chart_config, indent=2)
-        except Exception as e:
-            return f"Error creating chart: {str(e)}"
+        return json.dumps(config, ensure_ascii=False, indent=2)
 
-    async def _arun(self, data: str, chart_type: str, title: str = "") -> str:
-        """Async execution."""
-        return self._run(data, chart_type, title)
+    except Exception as e:
+        return f"Error creating chart: {str(e)}"

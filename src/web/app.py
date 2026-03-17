@@ -8,7 +8,8 @@ src_path = Path(__file__).parent.parent
 sys.path.insert(0, str(src_path))
 
 from src.core.config import get_settings
-from src.agent.agent import create_data_agent
+from src.agent.agent import create_az_data_agent
+from src.agent.middleware import get_alert_handler
 
 # Page config
 st.set_page_config(
@@ -24,7 +25,12 @@ if "messages" not in st.session_state:
 if "agent" not in st.session_state:
     try:
         settings = get_settings()
-        st.session_state.agent = create_data_agent(settings, verbose=False)
+        agent = create_az_data_agent(settings)
+        st.session_state.agent = agent
+
+        # Register alert handler callback
+        alert_handler = get_alert_handler()
+        alert_handler.set_agent_invoke(agent.invoke)
     except Exception as e:
         st.error(f"Failed to initialize agent: {e}")
         st.session_state.agent = None
@@ -82,8 +88,15 @@ def main():
             with st.spinner("Analyzing..."):
                 try:
                     if st.session_state.agent:
-                        result = st.session_state.agent.invoke({"input": prompt})
-                        response = result.get("output", "Unable to generate response")
+                        # DeepAgent invoke format
+                        result = st.session_state.agent.invoke({
+                            "messages": [{"role": "user", "content": prompt}]
+                        })
+                        # Extract response from messages
+                        if result and "messages" in result and result["messages"]:
+                            response = result["messages"][-1].content
+                        else:
+                            response = "Unable to generate response"
                     else:
                         response = "Agent not initialized. Please check configuration."
 

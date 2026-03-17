@@ -1,38 +1,54 @@
-"""Context enricher middleware for data model injection."""
-from typing import Any, Dict
+"""Data context middleware for injecting business context into agent."""
+from typing import Callable
+
+from langchain.agents.middleware import AgentMiddleware, ModelRequest
+from langchain.agents.middleware.types import ModelResponse
+from langchain.messages import SystemMessage
+
+from src.agent.context.business_context import BUSINESS_CONTEXT
 
 
-class ContextEnricherMiddleware:
-    """Middleware to inject business context into agent."""
+class DataContextMiddleware(AgentMiddleware):
+    """
+    Middleware that injects business context into the agent's system prompt.
 
-    DATA_CONTEXT = """
-## AstraZeneca Data Context
+    This middleware appends the business context (table structures, field descriptions,
+    business metadata) to the system message content blocks before each LLM call.
+    """
 
-### Business Domain
-Pharmaceutical company data for Spain and Brazil markets.
+    def __init__(self):
+        super().__init__()
+        self.context = BUSINESS_CONTEXT
 
-### Data Model
-- Star schema with dual fact tables (P&L and Commercial)
-- 36 months of historical data (2023-2025)
-- Multi-scenario planning (Actual, Budget, MTP, LTP)
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """
+        Inject context into the system message.
 
-### Key Metrics
-- Revenue and profitability analysis
-- Market share tracking
-- Budget variance analysis
-- Year-over-year comparisons
+        Appends business context to the system_message content_blocks.
+        """
+        # Get current system message content blocks
+        current_blocks = list(request.system_message.content_blocks)
 
-### Geographic Scope
-- Spain (Management Unit: 44000ES)
-- Brazil (Management Unit: 44000BR)
+        # Add business context block
+        context_block = {
+            "type": "text",
+            "text": f"\n\n## 数据仓库上下文\n\n{self.context}"
+        }
+        new_blocks = current_blocks + [context_block]
 
-### Product Categories
-- Oncology TA
-- BioPharma TA (CVRM)
-- Rare Disease TA
-- Central TA
-"""
+        # Create new system message
+        new_system_message = SystemMessage(content=new_blocks)
 
-    def enrich_prompt(self, prompt: str) -> str:
-        """Add data context to the prompt."""
-        return f"{prompt}\n\n{self.DATA_CONTEXT}"
+        # Call handler with modified request
+        return handler(request.override(system_message=new_system_message))
+
+
+# Keep backward compatibility alias
+ContextEnricherMiddleware = DataContextMiddleware
+
+
+__all__ = ["DataContextMiddleware", "ContextEnricherMiddleware"]

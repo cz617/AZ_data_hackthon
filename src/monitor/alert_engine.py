@@ -12,6 +12,7 @@ from src.monitor.models import (
     ThresholdOperator,
     get_session,
 )
+from src.agent.middleware.alert_trigger import get_alert_handler
 
 
 def check_threshold(
@@ -51,6 +52,7 @@ def process_metric(
 ) -> MetricResult:
     """
     Execute a metric and create result record.
+    If alert is triggered, call Agent for automatic analysis.
 
     Args:
         metric: Metric to process
@@ -81,13 +83,30 @@ def process_metric(
         session.refresh(result)
 
         if is_alert:
+            # Create alert record with PROCESSING status
             alert = AlertQueue(
                 metric_id=metric.id,
                 result_id=result.id,
-                status=AlertStatus.PENDING,
+                status=AlertStatus.PROCESSING,
             )
             session.add(alert)
             session.commit()
+            session.refresh(alert)
+
+            # Call Agent for analysis
+            alert_handler = get_alert_handler()
+            try:
+                analysis_result = alert_handler.on_alert(alert, metric, result)
+                # Update alert status to COMPLETED
+                alert.status = AlertStatus.COMPLETED
+                alert.analysis_result = analysis_result
+            except Exception as e:
+                # Update alert status to FAILED
+                alert.status = AlertStatus.FAILED
+                alert.analysis_result = f"Analysis failed: {str(e)}"
+            finally:
+                alert.processed_at = datetime.utcnow()
+                session.commit()
 
     finally:
         session.close()
