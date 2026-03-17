@@ -1,1 +1,1 @@
-# Agent test package
+"""Tests for agent module."""

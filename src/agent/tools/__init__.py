@@ -1,5 +1,20 @@
 """Agent tools package."""
-from src.agent.tools.snowflake_tool import SnowflakeTool
-from src.agent.tools.chart_tool import ChartTool
+from typing import Callable
 
-__all__ = ["SnowflakeTool", "ChartTool"]
+from src.agent.tools.snowflake_tool import snowflake_query
+from src.agent.tools.chart_tool import create_chart
+
+
+__all__ = [
+    "snowflake_query",
+    "create_chart",
+    "get_default_tools",
+]
+
+
+def get_default_tools() -> list[Callable]:
+    """Get the list of default tools for the agent."""
+    return [
+        snowflake_query,
+        create_chart,
+    ]
