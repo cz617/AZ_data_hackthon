@@ -308,7 +308,10 @@ class AlertTriggerHandler:
             response = self._agent_invoke({
                 "messages": [{"role": "user", "content": prompt}]
             })
-            return response.get("output", "Analysis completed")
+            # DeepAgent 返回结果在 response["messages"][-1].content
+            if response and "messages" in response and response["messages"]:
+                return response["messages"][-1].content
+            return "Analysis completed"
         except Exception as e:
             return f"Analysis failed: {str(e)}"
 
@@ -835,10 +838,11 @@ def analyze_with_agent(
     result = agent.invoke({
         "messages": [{"role": "user", "content": question}]
     })
-    # DeepAgent (CompiledStateGraph) 返回结果中提取 output
-    if isinstance(result, dict):
-        return result.get("output", "Unable to generate response")
-    return str(result)
+    # DeepAgent 返回 CompiledStateGraph 结果
+    # 响应内容在 result["messages"][-1].content 中
+    if result and "messages" in result and result["messages"]:
+        return result["messages"][-1].content
+    return "Unable to generate response"
 ```
 
 ### 6.2 模块导出
@@ -1058,13 +1062,18 @@ def process_metric(
 
             # 调用 Agent 进行分析
             alert_handler = get_alert_handler()
-            analysis_result = alert_handler.on_alert(alert, metric, result)
-
-            # 更新告警状态
-            alert.status = AlertStatus.COMPLETED
-            alert.analysis_result = analysis_result
-            alert.processed_at = datetime.utcnow()
-            session.commit()
+            try:
+                analysis_result = alert_handler.on_alert(alert, metric, result)
+                # 更新告警状态为完成
+                alert.status = AlertStatus.COMPLETED
+                alert.analysis_result = analysis_result
+            except Exception as e:
+                # 更新告警状态为失败
+                alert.status = AlertStatus.FAILED
+                alert.analysis_result = f"Analysis failed: {str(e)}"
+            finally:
+                alert.processed_at = datetime.utcnow()
+                session.commit()
 
     finally:
         session.close()
