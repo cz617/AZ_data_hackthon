@@ -116,8 +116,8 @@ src/agent/
 ```toml
 # pyproject.toml
 dependencies = [
-    "langchain>=1.0.0",
-    "deepagents>=0.1.0",
+    "langchain>=0.3.0",           # LangChain 核心
+    "deepagents>=0.1.0",          # DeepAgent 包 (pre-1.0)
     "langchain-anthropic>=0.3.0",
     "langchain-openai>=0.3.0",
     "snowflake-connector-python>=3.0.0",
@@ -133,6 +133,8 @@ dependencies = [
 ]
 ```
 
+**注意**: `deepagents` 是 LangChain 官方的 pre-1.0 包，API 可能在 minor 版本间变化。
+
 ---
 
 ## 3. Middleware 中间件
@@ -144,29 +146,50 @@ dependencies = [
 **职责**: 注入 Snowflake 表结构、字段说明、业务元数据到 Agent 上下文。
 
 ```python
-from deepagents import Middleware
+from typing import Callable
+from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
+from langchain.messages import SystemMessage
 
-class DataContextMiddleware(Middleware):
-    """注入数据仓库的业务上下文"""
+from src.agent.context.business_context import BUSINESS_CONTEXT
+
+
+class DataContextMiddleware(AgentMiddleware):
+    """
+    数据上下文中间件
+
+    通过 wrap_model_call 钩子在每次 LLM 调用前注入业务上下文。
+    将业务元数据追加到 system_message 的 content_blocks 中。
+    """
 
     def __init__(self):
-        self.context = self._load_context()
+        super().__init__()
+        self.context = BUSINESS_CONTEXT
 
-    def _load_context(self) -> str:
-        """加载硬编码的业务上下文"""
-        from src.agent.context.business_context import BUSINESS_CONTEXT
-        return BUSINESS_CONTEXT
+    def wrap_model_call(
+        self,
+        request: ModelRequest,
+        handler: Callable[[ModelRequest], ModelResponse],
+    ) -> ModelResponse:
+        """
+        在请求中注入上下文
 
-    def process(self, request):
-        """在请求中注入上下文"""
-        enriched_prompt = f"""
-{request.system_prompt}
+        将业务上下文追加到 system_message 的 content_blocks 中。
+        """
+        # 获取当前 system_message 的 content_blocks
+        current_blocks = list(request.system_message.content_blocks)
 
-## 数据仓库上下文
+        # 添加业务上下文
+        context_block = {
+            "type": "text",
+            "text": f"\n\n## 数据仓库上下文\n\n{self.context}"
+        }
+        new_blocks = current_blocks + [context_block]
 
-{self.context}
-"""
-        return request.with_system_prompt(enriched_prompt)
+        # 创建新的 system_message
+        new_system_message = SystemMessage(content=new_blocks)
+
+        # 使用修改后的请求调用 handler
+        return handler(request.override(system_message=new_system_message))
 ```
 
 ### 3.2 业务上下文配置
@@ -216,13 +239,19 @@ ENT_HACKATHON_DATA_SHARE.EA_HACKATHON
 """
 ```
 
-### 3.3 告警触发中间件
+### 3.3 告警触发处理器
 
 **文件**: `src/agent/middleware/alert_trigger.py`
 
 **职责**: 接收监控模块的告警推送，调用 Agent 进行自动分析。
 
-**设计说明**: 此中间件不同于 DataContextMiddleware，它不参与 Agent 的请求处理流程，而是作为一个独立的回调处理器，接收监控模块的告警事件。因此它不需要注册到 Agent 的 middleware 列表中，而是通过 `set_agent_invoke()` 方法持有 Agent 的引用。
+**设计说明**:
+
+这是一个**事件驱动的回调处理器**，而非 AgentMiddleware 的实现：
+- 它不参与 Agent 的请求处理流程（不实现 `wrap_model_call`）
+- 作为独立的组件，持有 Agent 的 `invoke` 方法引用
+- 监控模块通过 `get_alert_handler()` 获取实例并调用 `on_alert()`
+- 命名为 `AlertTriggerHandler` 而非 `Middleware` 以避免混淆
 
 ```python
 from typing import Callable, Optional
@@ -231,21 +260,23 @@ from datetime import datetime
 from src.monitor.models import AlertQueue, Metric, MetricResult, AlertStatus
 
 
-class AlertTriggerMiddleware:
+class AlertTriggerHandler:
     """
     处理监控告警的触发和回调
 
-    设计说明：
-    - 这是一个事件驱动的中间件，不参与 Agent 的请求处理流程
-    - 通过 singleton 模式确保全局只有一个实例
-    - 监控模块通过 get_alert_middleware() 获取实例并调用 on_alert()
+    这是一个事件驱动的处理器，不参与 Agent 的请求处理流程。
+    监控模块检测到告警后，调用此处理器的 on_alert() 方法触发 Agent 分析。
     """
 
     def __init__(self):
         self._agent_invoke: Optional[Callable] = None
 
     def set_agent_invoke(self, invoke_func: Callable):
-        """设置 Agent 的 invoke 方法"""
+        """
+        设置 Agent 的 invoke 方法
+
+        必须在 Web 应用启动时调用此方法注册 Agent 回调。
+        """
         self._agent_invoke = invoke_func
 
     def on_alert(
@@ -311,15 +342,15 @@ class AlertTriggerMiddleware:
 
 
 # 全局单例
-_alert_middleware: Optional[AlertTriggerMiddleware] = None
+_alert_handler: Optional[AlertTriggerHandler] = None
 
 
-def get_alert_middleware() -> AlertTriggerMiddleware:
-    """获取告警中间件单例"""
-    global _alert_middleware
-    if _alert_middleware is None:
-        _alert_middleware = AlertTriggerMiddleware()
-    return _alert_middleware
+def get_alert_handler() -> AlertTriggerHandler:
+    """获取告警处理器单例"""
+    global _alert_handler
+    if _alert_handler is None:
+        _alert_handler = AlertTriggerHandler()
+    return _alert_handler
 ```
 
 ---
@@ -512,21 +543,27 @@ SKILLS_REGISTRY = {
 
 
 def get_skill_paths() -> list[str]:
-    """获取所有技能路径，供 DeepAgent 加载"""
+    """获取所有技能目录路径，供 DeepAgent 加载"""
     return list(SKILLS_REGISTRY.values())
 ```
 
 **Skills 加载流程**:
 
-1. `create_deep_agent()` 接收 `skills` 参数（技能目录路径列表）
-2. DeepAgent 内部读取每个目录下的 `skill.md` 文件
-3. 将 skill.md 的内容注入到 Agent 的上下文中
+1. `create_deep_agent()` 接收 `skills` 参数（**技能目录路径列表**，非文件路径）
+2. DeepAgent 内部查找每个目录下的 `skill.md` 文件
+3. 将 `skill.md` 的内容注入到 Agent 的上下文中
 4. Agent 在处理请求时，可以根据 skill 中的指南生成更好的响应
 
 **skill.md 文件格式要求**:
 - 必须包含技能描述和使用场景
 - 可包含查询模板、示例代码
 - 使用 Markdown 格式，便于 Agent 解析
+
+**目录结构示例**:
+```
+src/agent/skills/sql_analyzer/
+└── skill.md              # 必须存在
+```
 
 ---
 
@@ -706,7 +743,6 @@ from deepagents import create_deep_agent
 from src.core.config import Settings, get_settings
 from src.agent.tools import get_default_tools
 from src.agent.middleware.data_context import DataContextMiddleware
-from src.agent.middleware.alert_trigger import AlertTriggerMiddleware, get_alert_middleware
 from src.agent.skills import get_skill_paths
 
 
@@ -741,7 +777,7 @@ market performance, and generate insights from the data warehouse.
 def create_az_data_agent(
     settings: Optional[Settings] = None,
     verbose: bool = False,
-) -> "DeepAgent":
+):
     """
     创建 AZ 数据分析 Agent
 
@@ -750,7 +786,7 @@ def create_az_data_agent(
         verbose: 是否打印详细日志
 
     Returns:
-        配置好的 DeepAgent 实例
+        CompiledStateGraph (DeepAgent 实例)
     """
     settings = settings or get_settings()
 
@@ -762,10 +798,11 @@ def create_az_data_agent(
         DataContextMiddleware(),
     ]
 
-    # 获取技能路径
+    # 获取技能目录路径
     skills = get_skill_paths()
 
-    # 创建 Agent
+    # 创建 DeepAgent
+    # 注意: create_deep_agent 返回 CompiledStateGraph
     agent = create_deep_agent(
         model=settings.llm_model,
         tools=tools,
@@ -795,6 +832,7 @@ def analyze_with_agent(
     result = agent.invoke({
         "messages": [{"role": "user", "content": question}]
     })
+    # DeepAgent 返回格式可能不同，需要根据实际情况适配
     return result.get("output", "Unable to generate response")
 ```
 
@@ -805,7 +843,7 @@ def analyze_with_agent(
 ```python
 from src.agent.agent import create_az_data_agent, analyze_with_agent
 from src.agent.middleware.data_context import DataContextMiddleware
-from src.agent.middleware.alert_trigger import AlertTriggerMiddleware, get_alert_middleware
+from src.agent.middleware.alert_trigger import AlertTriggerHandler, get_alert_handler
 from src.agent.tools import snowflake_query, create_chart, get_default_tools
 from src.agent.skills import SKILLS_REGISTRY, get_skill_paths
 
@@ -813,8 +851,8 @@ __all__ = [
     "create_az_data_agent",
     "analyze_with_agent",
     "DataContextMiddleware",
-    "AlertTriggerMiddleware",
-    "get_alert_middleware",
+    "AlertTriggerHandler",
+    "get_alert_handler",
     "snowflake_query",
     "create_chart",
     "get_default_tools",
@@ -864,17 +902,17 @@ class AlertStatus(str, PyEnum):
 │       └── 加载 Skills (sql_analyzer, data_visualizer, etc.)     │
 │       │                                                          │
 │       ▼                                                          │
-│  3. get_alert_middleware().set_agent_invoke(agent.invoke)       │
+│  3. get_alert_handler().set_agent_invoke(agent.invoke)          │
 │       │                                                          │
-│       │  ← 注册 Agent 回调，使告警中间件能调用 Agent            │
+│       │  ← 注册 Agent 回调，使告警处理器能调用 Agent             │
 │       │                                                          │
 │       ▼                                                          │
 │  4. start_monitor_service()                                     │
 │       │                                                          │
-│       │  ← 启动监控调度器，定期执行指标检查                     │
+│       │  ← 启动监控调度器，定期执行指标检查                      │
 │       │                                                          │
 │       ▼                                                          │
-│  5. 应用就绪，等待用户交互或告警触发                            │
+│  5. 应用就绪，等待用户交互或告警触发                             │
 │                                                                  │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -936,9 +974,9 @@ from src.monitor.models import (
     AlertStatus,
     Metric,
     MetricResult,
-    get_session,  # SQLAlchemy session 工厂
+    get_session,  # 已存在于 models.py
 )
-from src.agent.middleware.alert_trigger import get_alert_middleware
+from src.agent.middleware.alert_trigger import get_alert_handler
 
 
 def process_metric(
@@ -964,7 +1002,7 @@ def process_metric(
         metric.threshold_operator,
     )
 
-    # 创建数据库会话
+    # 创建数据库会话 (get_session 已在 models.py 中定义)
     session: Session = get_session(db_path)
 
     try:
@@ -991,8 +1029,8 @@ def process_metric(
             session.refresh(alert)
 
             # 调用 Agent 进行分析
-            alert_middleware = get_alert_middleware()
-            analysis_result = alert_middleware.on_alert(alert, metric, result)
+            alert_handler = get_alert_handler()
+            analysis_result = alert_handler.on_alert(alert, metric, result)
 
             # 更新告警状态
             alert.status = AlertStatus.COMPLETED
@@ -1014,7 +1052,7 @@ def process_metric(
 import streamlit as st
 
 from src.agent.agent import create_az_data_agent
-from src.agent.middleware.alert_trigger import get_alert_middleware
+from src.agent.middleware.alert_trigger import get_alert_handler
 
 
 def main():
@@ -1026,8 +1064,8 @@ def main():
         st.session_state.agent = agent
 
         # 注册告警回调
-        alert_middleware = get_alert_middleware()
-        alert_middleware.set_agent_invoke(agent.invoke)
+        alert_handler = get_alert_handler()
+        alert_handler.set_agent_invoke(agent.invoke)
 
     # ... 其他 UI 逻辑 ...
 ```
@@ -1083,8 +1121,8 @@ def on_alert(self, alert, metric, result) -> str:
 |------|------|------|
 | `src/agent/agent.py` | 主入口 | DeepAgent 创建和调用 |
 | `src/agent/__init__.py` | 模块导出 | 公开 API |
-| `src/agent/middleware/data_context.py` | 中间件 | 数据上下文注入 |
-| `src/agent/middleware/alert_trigger.py` | 中间件 | 告警触发处理 |
+| `src/agent/middleware/data_context.py` | 中间件 | 数据上下文注入 (AgentMiddleware) |
+| `src/agent/middleware/alert_trigger.py` | 处理器 | 告警触发回调 (AlertTriggerHandler) |
 | `src/agent/context/business_context.py` | 配置 | 业务元数据 |
 | `src/agent/tools/snowflake_tool.py` | 工具 | SQL 查询执行 |
 | `src/agent/tools/chart_tool.py` | 工具 | 图表生成 |
