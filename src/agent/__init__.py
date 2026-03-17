@@ -11,8 +11,16 @@ from src.agent.middleware import (
     get_alert_handler,
 )
 from src.agent.tools import (
+    # Query tools
     snowflake_query,
+    # Visualization tools
     create_chart,
+    # Database exploration tools
+    list_tables,
+    describe_table,
+    preview_table,
+    get_table_stats,
+    # Helper
     get_default_tools,
 )
 from src.agent.skills import (
@@ -31,9 +39,16 @@ __all__ = [
     "ContextEnricherMiddleware",
     "AlertTriggerHandler",
     "get_alert_handler",
-    # Tools
+    # Tools - Query
     "snowflake_query",
+    # Tools - Visualization
     "create_chart",
+    # Tools - Database Exploration
+    "list_tables",
+    "describe_table",
+    "preview_table",
+    "get_table_stats",
+    # Helper
     "get_default_tools",
     # Skills
     "SKILLS_REGISTRY",
