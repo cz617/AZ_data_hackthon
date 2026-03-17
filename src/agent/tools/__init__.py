@@ -1,41 +1,38 @@
-"""Agent tools package."""
+"""Agent tools package.
+
+This module provides tools for the AZ Data Agent:
+- Snowflake SQL tools (via SQLDatabaseToolkit)
+- Chart visualization tool
+"""
 from typing import Callable
 
-from src.agent.tools.snowflake_tool import snowflake_query
+from langchain_core.language_models import BaseLanguageModel
+from langchain_core.tools import BaseTool
+
+from src.agent.tools.snowflake import get_snowflake_tools, get_snowflake_db
 from src.agent.tools.chart_tool import create_chart
-from src.agent.tools.db_explorer_tool import (
-    list_tables,
-    describe_table,
-    preview_table,
-    get_table_stats,
-)
 
 
 __all__ = [
-    # Query tools
-    "snowflake_query",
+    # Snowflake tools (SQLDatabaseToolkit: query, schema, list_tables, query_checker)
+    "get_snowflake_tools",
+    "get_snowflake_db",
     # Visualization tools
     "create_chart",
-    # Database exploration tools
-    "list_tables",
-    "describe_table",
-    "preview_table",
-    "get_table_stats",
     # Helper functions
     "get_default_tools",
 ]
 
 
-def get_default_tools() -> list[Callable]:
-    """Get the list of default tools for the agent."""
-    return [
-        # Database exploration (should be used first to understand schema)
-        list_tables,
-        describe_table,
-        preview_table,
-        get_table_stats,
-        # Query execution
-        snowflake_query,
-        # Visualization
-        create_chart,
-    ]
+def get_default_tools(llm: BaseLanguageModel) -> list[BaseTool]:
+    """Get the list of default tools for the agent.
+
+    Args:
+        llm: Language model required for query checking tool.
+
+    Returns:
+        List of tools including Snowflake SQL tools and visualization.
+    """
+    tools = get_snowflake_tools(llm)
+    tools.append(create_chart)
+    return tools

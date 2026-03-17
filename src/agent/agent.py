@@ -2,6 +2,7 @@
 from typing import Optional
 
 from deepagents import create_deep_agent
+from langchain.chat_models import init_chat_model
 
 from src.core.config import Settings, get_settings
 from src.agent.tools import get_default_tools
@@ -23,10 +24,12 @@ market performance, and generate insights from the data warehouse.
 ## Workflow
 
 1. Understand the user's question completely
-2. Generate appropriate SQL queries using the snowflake_query tool
-3. Analyze the results and explain findings
-4. Offer to create visualizations when helpful
-5. Generate reports for complex analysis
+2. Use sql_db_list_tables to discover available tables
+3. Use sql_db_schema to understand table structures
+4. Use sql_db_query_checker to validate SQL before execution
+5. Use sql_db_query to execute queries and analyze results
+6. Offer to create visualizations when helpful
+7. Generate reports for complex analysis
 
 ## Guidelines
 
@@ -53,8 +56,11 @@ def create_az_data_agent(
     """
     settings = settings or get_settings()
 
-    # Initialize tools (function-based)
-    tools = get_default_tools()
+    # Initialize LLM for tools that need it (e.g., sql_db_query_checker)
+    llm = init_chat_model(settings.llm_model)
+
+    # Initialize tools (requires LLM for query checking)
+    tools = get_default_tools(llm)
 
     # Initialize middleware
     middleware = [
