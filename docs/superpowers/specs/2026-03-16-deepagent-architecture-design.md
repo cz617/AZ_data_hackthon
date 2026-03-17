@@ -222,15 +222,24 @@ ENT_HACKATHON_DATA_SHARE.EA_HACKATHON
 
 **职责**: 接收监控模块的告警推送，调用 Agent 进行自动分析。
 
+**设计说明**: 此中间件不同于 DataContextMiddleware，它不参与 Agent 的请求处理流程，而是作为一个独立的回调处理器，接收监控模块的告警事件。因此它不需要注册到 Agent 的 middleware 列表中，而是通过 `set_agent_invoke()` 方法持有 Agent 的引用。
+
 ```python
 from typing import Callable, Optional
 from datetime import datetime
 
-from src.monitor.models import AlertQueue, Metric, MetricResult
+from src.monitor.models import AlertQueue, Metric, MetricResult, AlertStatus
 
 
 class AlertTriggerMiddleware:
-    """处理监控告警的触发和回调"""
+    """
+    处理监控告警的触发和回调
+
+    设计说明：
+    - 这是一个事件驱动的中间件，不参与 Agent 的请求处理流程
+    - 通过 singleton 模式确保全局只有一个实例
+    - 监控模块通过 get_alert_middleware() 获取实例并调用 on_alert()
+    """
 
     def __init__(self):
         self._agent_invoke: Optional[Callable] = None
@@ -486,7 +495,7 @@ JOIN ENT_HACKATHON_DATA_SHARE.EA_HACKATHON.DIM_PRODUCT p
 - 定期业务分析报告
 ```
 
-### 4.5 Skills 注册
+### 4.5 Skills 注册与加载机制
 
 **文件**: `src/agent/skills/__init__.py`
 
@@ -503,9 +512,21 @@ SKILLS_REGISTRY = {
 
 
 def get_skill_paths() -> list[str]:
-    """获取所有技能路径"""
+    """获取所有技能路径，供 DeepAgent 加载"""
     return list(SKILLS_REGISTRY.values())
 ```
+
+**Skills 加载流程**:
+
+1. `create_deep_agent()` 接收 `skills` 参数（技能目录路径列表）
+2. DeepAgent 内部读取每个目录下的 `skill.md` 文件
+3. 将 skill.md 的内容注入到 Agent 的上下文中
+4. Agent 在处理请求时，可以根据 skill 中的指南生成更好的响应
+
+**skill.md 文件格式要求**:
+- 必须包含技能描述和使用场景
+- 可包含查询模板、示例代码
+- 使用 Markdown 格式，便于 Agent 解析
 
 ---
 
@@ -806,7 +827,59 @@ __all__ = [
 
 ## 7. 集成点
 
-### 7.1 监控模块集成
+### 7.1 数据模型定义
+
+**文件**: `src/monitor/models.py` (已有，补充 AlertStatus)
+
+```python
+from enum import Enum as PyEnum
+
+
+class AlertStatus(str, PyEnum):
+    """告警状态枚举"""
+    PENDING = "pending"        # 等待处理
+    PROCESSING = "processing"  # 正在处理
+    COMPLETED = "completed"    # 已完成
+    FAILED = "failed"          # 处理失败
+```
+
+### 7.2 初始化流程
+
+应用启动时，需要按以下顺序初始化各组件：
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      初始化流程                                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. Web 应用启动 (Streamlit)                                     │
+│       │                                                          │
+│       ▼                                                          │
+│  2. create_az_data_agent()                                      │
+│       │                                                          │
+│       ├── 加载 Tools (snowflake_query, create_chart)            │
+│       │                                                          │
+│       ├── 加载 Middleware (DataContextMiddleware)               │
+│       │                                                          │
+│       └── 加载 Skills (sql_analyzer, data_visualizer, etc.)     │
+│       │                                                          │
+│       ▼                                                          │
+│  3. get_alert_middleware().set_agent_invoke(agent.invoke)       │
+│       │                                                          │
+│       │  ← 注册 Agent 回调，使告警中间件能调用 Agent            │
+│       │                                                          │
+│       ▼                                                          │
+│  4. start_monitor_service()                                     │
+│       │                                                          │
+│       │  ← 启动监控调度器，定期执行指标检查                     │
+│       │                                                          │
+│       ▼                                                          │
+│  5. 应用就绪，等待用户交互或告警触发                            │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 7.3 监控模块集成
 
 **文件**: `src/monitor/alert_engine.py` (修改部分)
 
@@ -850,7 +923,90 @@ def process_metric(
     return result
 ```
 
-### 7.2 Web UI 集成
+### 7.4 监控告警处理实现
+
+**文件**: `src/monitor/alert_engine.py` (修改部分)
+
+```python
+from datetime import datetime
+from sqlalchemy.orm import Session
+
+from src.monitor.models import (
+    AlertQueue,
+    AlertStatus,
+    Metric,
+    MetricResult,
+    get_session,  # SQLAlchemy session 工厂
+)
+from src.agent.middleware.alert_trigger import get_alert_middleware
+
+
+def process_metric(
+    metric: Metric,
+    settings: Settings,
+    db_path: str = "data/monitor.db",
+) -> MetricResult:
+    """
+    执行指标并处理告警
+
+    Args:
+        metric: 要执行的监控指标
+        settings: 应用配置
+        db_path: SQLite 数据库路径
+    """
+    # 执行 SQL 获取实际值
+    actual_value = execute_metric_sql(metric, settings)
+
+    # 阈值判断
+    is_alert = check_threshold(
+        actual_value,
+        metric.threshold_value,
+        metric.threshold_operator,
+    )
+
+    # 创建数据库会话
+    session: Session = get_session(db_path)
+
+    try:
+        # 创建执行结果记录
+        result = MetricResult(
+            metric_id=metric.id,
+            actual_value=actual_value,
+            threshold_value=metric.threshold_value,
+            is_alert=is_alert,
+        )
+        session.add(result)
+        session.commit()
+        session.refresh(result)
+
+        if is_alert:
+            # 创建告警记录
+            alert = AlertQueue(
+                metric_id=metric.id,
+                result_id=result.id,
+                status=AlertStatus.PROCESSING,
+            )
+            session.add(alert)
+            session.commit()
+            session.refresh(alert)
+
+            # 调用 Agent 进行分析
+            alert_middleware = get_alert_middleware()
+            analysis_result = alert_middleware.on_alert(alert, metric, result)
+
+            # 更新告警状态
+            alert.status = AlertStatus.COMPLETED
+            alert.analysis_result = analysis_result
+            alert.processed_at = datetime.utcnow()
+            session.commit()
+
+    finally:
+        session.close()
+
+    return result
+```
+
+### 7.5 Web UI 集成
 
 **文件**: `src/web/app.py` (修改部分)
 
@@ -878,7 +1034,50 @@ def main():
 
 ---
 
-## 8. 文件清单
+## 9. 错误处理策略
+
+### 9.1 外部依赖错误处理
+
+| 依赖 | 错误类型 | 处理策略 |
+|------|---------|---------|
+| Snowflake | 连接失败 | 返回友好错误信息，记录日志，不中断 Agent |
+| Snowflake | 查询超时 | 设置查询超时（30秒），超时后返回提示用户简化查询 |
+| Snowflake | SQL 语法错误 | 返回错误详情，提示用户检查查询 |
+| LLM API | API 限流 | 重试机制（最多3次），指数退避 |
+| LLM API | API 密钥无效 | 启动时验证，无效则拒绝启动 |
+| Skills | 文件不存在 | 跳过缺失的 skill，记录警告日志 |
+
+### 9.2 工具层错误处理
+
+```python
+# snowflake_tool.py 中的错误处理示例
+def snowflake_query(sql: str) -> str:
+    try:
+        # ... 执行查询 ...
+    except snowflake.connector.errors.DatabaseError as e:
+        return f"数据库错误: {str(e)}"
+    except snowflake.connector.errors.TimeoutError:
+        return "查询超时，请尝试简化查询或减少数据量"
+    except Exception as e:
+        return f"查询执行失败: {str(e)}"
+```
+
+### 9.3 告警处理错误处理
+
+```python
+# alert_trigger.py 中的错误处理
+def on_alert(self, alert, metric, result) -> str:
+    try:
+        response = self._agent_invoke({...})
+        return response.get("output", "Analysis completed")
+    except Exception as e:
+        # 标记告警为失败状态
+        return f"Analysis failed: {str(e)}"
+```
+
+---
+
+## 10. 文件清单
 
 | 文件 | 类型 | 说明 |
 |------|------|------|
@@ -897,16 +1096,29 @@ def main():
 
 ---
 
-## 附录
+## 11. 附录
 
-### A. 迁移注意事项
+### A. 依赖验证
+
+**重要**: `deepagents` 是 LangChain 官方的 pre-1.0 包，可通过以下命令安装：
+
+```bash
+pip install deepagents
+```
+
+根据 LangChain 官方文档：
+- `deepagents` 目前是 pre-1.0 版本（如 0.1.0）
+- API 可能在 minor 版本间变化
+- 版本 1.0 后将采用与 LangChain 相同的 LTS 策略
+
+### B. 迁移注意事项
 
 1. **依赖安装**: 需要 `pip install deepagents langchain>=1.0.0`
 2. **API 变更**: `create_tool_calling_agent` → `create_deep_agent`
 3. **返回格式**: DeepAgent 的 invoke 返回格式可能与之前不同，需要适配
 4. **测试覆盖**: 需要为新的 Middleware 和 Skills 编写测试
 
-### B. 参考文档
+### C. 参考文档
 
 - [LangChain DeepAgent 文档](https://docs.langchain.com/oss/python/deepagents/overview)
 - [DeepAgent Middleware](https://docs.langchain.com/oss/python/langchain/middleware/built-in)
