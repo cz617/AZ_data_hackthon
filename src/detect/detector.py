@@ -361,6 +361,7 @@ def detect_single_metric(
             is_alert=is_alert,
         )
 
+
     except Exception as e:
         print(f"Error detecting metric {metric.account_name} - {metric.description}: {e}")
         return None
